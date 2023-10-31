@@ -8,7 +8,7 @@ use PHP_CodeSniffer\Sniffs\Sniff;
 /**
  * 無名関数の引数にタイプヒントを強制するルール
  */
-final class RequireClosureArgumentTypeHintSniff implements Sniff
+class RequireClosureArgumentTypeHintSniff implements Sniff
 {
     public function register()
     {

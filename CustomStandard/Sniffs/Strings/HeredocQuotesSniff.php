@@ -8,7 +8,7 @@ use PHP_CodeSniffer\Sniffs\Sniff;
 /**
  * ヒアドキュメント構文の引用符を"EOL"または"SQL"に強制するルール
  */
-final class HeredocQuotesSniff implements Sniff
+class HeredocQuotesSniff implements Sniff
 {
     public function register()
     {

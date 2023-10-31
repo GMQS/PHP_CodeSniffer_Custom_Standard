@@ -8,7 +8,7 @@ use PHP_CodeSniffer\Sniffs\Sniff;
 /**
  * 文字列リテラルの引用符をダブルクォートに強制するルール
  */
-final class RequireDoubleQuotesSniff implements Sniff
+class RequireDoubleQuotesSniff implements Sniff
 {
     public function register()
     {
