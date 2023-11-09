@@ -59,12 +59,14 @@ class ConstructorPropertyPromotionSniff implements Sniff {
         }
 
         $parameterWithoutPromotionPointers = [];
+        $parameterWithPromotionPointers = [];
         foreach ($parameterPointers as $parameterPointer) {
             $pointerBefore = TokenHelper::findPrevious($phpcsFile, [T_COMMA, T_OPEN_PARENTHESIS], $parameterPointer - 1);
 
             $visibilityPointer = TokenHelper::findNextEffective($phpcsFile, $pointerBefore + 1);
 
             if (in_array($tokens[$visibilityPointer]['code'], Tokens::$scopeModifiers, true)) {
+                $parameterWithPromotionPointers[] = $parameterPointer;
                 continue;
             }
 
@@ -85,10 +87,6 @@ class ConstructorPropertyPromotionSniff implements Sniff {
             $parameterWithoutPromotionPointers[] = $parameterPointer;
         }
 
-        if (count($parameterWithoutPromotionPointers) === 0) {
-            return;
-        }
-
         /** @var int $classPointer */
         $classPointer = FunctionHelper::findClassPointer($phpcsFile, $functionPointer);
 
@@ -98,6 +96,27 @@ class ConstructorPropertyPromotionSniff implements Sniff {
             return;
         }
 
+        $propertyCount = count($parameterWithPromotionPointers) + count($propertyPointers);
+        if ($propertyCount !== count($parameterPointers)) {
+            if (count($parameterWithPromotionPointers) > 0) {
+                $promotedParameterName = (function () use ($parameterWithPromotionPointers, $tokens): string {
+                    $promotedParameterNames = array_map(fn($pointer) => '"' . $tokens[$pointer]['content'] . '"', $parameterWithPromotionPointers);
+                    return join(", ", $promotedParameterNames);
+                })();
+
+                $phpcsFile->addError(sprintf("If all properties cannot be promoted, don't promote %s in constructor.", $promotedParameterName),
+                    $functionPointer,
+                    "DisallowedPromotion"
+                );
+            }
+            return;
+        }
+
+        if (count($parameterWithoutPromotionPointers) === 0) {
+            return;
+        }
+
+        $promotableProperties = [];
         foreach ($parameterWithoutPromotionPointers as $parameterPointer) {
             $parameterName = $tokens[$parameterPointer]['content'];
 
@@ -131,94 +150,89 @@ class ConstructorPropertyPromotionSniff implements Sniff {
                     continue;
                 }
 
-                $fix = $phpcsFile->addFixableError(
-                    sprintf('Required promotion of property %s.', $propertyName),
-                    $propertyPointer,
-                    self::CODE_REQUIRED_CONSTRUCTOR_PROPERTY_PROMOTION
-                );
-
-                if (!$fix) {
-                    continue;
-                }
-
-                $propertyDocCommentOpenerPointer = DocCommentHelper::findDocCommentOpenPointer($phpcsFile, $propertyPointer);
-                $pointerBeforeProperty = TokenHelper::findFirstTokenOnLine(
-                    $phpcsFile,
-                    $propertyDocCommentOpenerPointer ?? $propertyPointer
-                );
-                $propertyEndPointer = TokenHelper::findNext($phpcsFile, T_SEMICOLON, $propertyPointer + 1);
-
-                $visibilityPointer = TokenHelper::findPrevious(
-                    $phpcsFile,
-                    Tokens::$scopeModifiers,
-                    $propertyPointer - 1,
-                    $pointerBeforeProperty
-                );
-                $visibility = $tokens[$visibilityPointer]['content'];
-
-                $readonlyPointer = TokenHelper::findPrevious($phpcsFile, T_READONLY, $propertyPointer - 1, $pointerBeforeProperty);
-                $isReadonly = $readonlyPointer !== null;
-
-                $propertyEqualPointer = TokenHelper::findNext($phpcsFile, T_EQUAL, $propertyPointer + 1, $propertyEndPointer);
-                $propertyDefaultValue = $propertyEqualPointer !== null
-                    ? trim(TokenHelper::getContent($phpcsFile, $propertyEqualPointer + 1, $propertyEndPointer - 1))
-                    : null;
-
-                $propertyEndPointer = TokenHelper::findNext($phpcsFile, T_SEMICOLON, $propertyPointer + 1);
-                $pointerAfterProperty = TokenHelper::findFirstTokenOnLine(
-                    $phpcsFile,
-                    TokenHelper::findNextNonWhitespace($phpcsFile, $propertyEndPointer + 1)
-                );
-
-                $pointerBeforeParameterStart = TokenHelper::findPrevious($phpcsFile, [T_COMMA, T_OPEN_PARENTHESIS], $parameterPointer - 1);
-                $parameterStartPointer = TokenHelper::findNextEffective($phpcsFile, $pointerBeforeParameterStart + 1);
-
-                $parameterEqualPointer = TokenHelper::findNextEffective($phpcsFile, $parameterPointer + 1);
-                $parameterHasDefaultValue = $tokens[$parameterEqualPointer]['code'] === T_EQUAL;
-
-                $pointerBeforeAssignment = TokenHelper::findFirstTokenOnLine($phpcsFile, $assignmentPointer - 1);
-                $pointerAfterAssignment = TokenHelper::findLastTokenOnLine($phpcsFile, $assignmentPointer);
-
-                $phpcsFile->fixer->beginChangeset();
-
-                FixerHelper::removeBetweenIncluding($phpcsFile, $pointerBeforeProperty, $pointerAfterProperty - 1);
-
-                if ($isReadonly) {
-                    $phpcsFile->fixer->addContentBefore($parameterStartPointer, 'readonly ');
-                }
-
-                $phpcsFile->fixer->addContentBefore($parameterStartPointer, sprintf('%s ', $visibility));
-
-                if (!$parameterHasDefaultValue && $propertyDefaultValue !== null) {
-                    $phpcsFile->fixer->addContent($parameterPointer, sprintf(' = %s', $propertyDefaultValue));
-                }
-
-                FixerHelper::removeBetweenIncluding($phpcsFile, $pointerBeforeAssignment, $pointerAfterAssignment);
-
-                $phpcsFile->fixer->endChangeset();
+                $promotableProperties[] = ["name" => $propertyName, "pointer" => $propertyPointer];
             }
         }
 
-        if ($phpcsFile->getFixableCount() !== count($parameterWithoutPromotionPointers)) {
-            $promotedParameterName = (function () use ($parameterPointers, $parameterWithoutPromotionPointers, $tokens): string {
-                $promotedParameterPointers = array_filter(
-                    $parameterPointers,
-                    fn($pointer) => !in_array(
-                        $pointer ,
-                        $parameterWithoutPromotionPointers,
-                        true
-                    )
-                );
+        if (count($promotableProperties) === 0) {
+            return;
+        }
 
-                $promotedParameterNames = array_map(fn($pointer) => '"' . $tokens[$pointer]['content'] . '"', $promotedParameterPointers);
-                return join(", ", $promotedParameterNames);
-            })();
+        if (count($propertyPointers) !== count($promotableProperties)) {
+            return;
+        }
 
-            $phpcsFile->addError(
-                sprintf("If all properties cannot be promoted, don't promote %s in constructor.", $promotedParameterName),
-                $functionPointer,
-                "DisallowedPromotion"
+        foreach ($promotableProperties as $promotableProperty) {
+            [
+                "name" => $propertyName,
+                "pointer" => $propertyPointer
+            ] = $promotableProperty;
+
+            $fix = $phpcsFile->addFixableError(
+                sprintf('Required promotion of property %s.', $propertyName),
+                $propertyPointer,
+                self::CODE_REQUIRED_CONSTRUCTOR_PROPERTY_PROMOTION
             );
+
+            if (!$fix) {
+                continue;
+            }
+
+            $propertyDocCommentOpenerPointer = DocCommentHelper::findDocCommentOpenPointer($phpcsFile, $propertyPointer);
+            $pointerBeforeProperty = TokenHelper::findFirstTokenOnLine(
+                $phpcsFile,
+                $propertyDocCommentOpenerPointer ?? $propertyPointer
+            );
+            $propertyEndPointer = TokenHelper::findNext($phpcsFile, T_SEMICOLON, $propertyPointer + 1);
+
+            $visibilityPointer = TokenHelper::findPrevious(
+                $phpcsFile,
+                Tokens::$scopeModifiers,
+                $propertyPointer - 1,
+                $pointerBeforeProperty
+            );
+            $visibility = $tokens[$visibilityPointer]['content'];
+
+            $readonlyPointer = TokenHelper::findPrevious($phpcsFile, T_READONLY, $propertyPointer - 1, $pointerBeforeProperty);
+            $isReadonly = $readonlyPointer !== null;
+
+            $propertyEqualPointer = TokenHelper::findNext($phpcsFile, T_EQUAL, $propertyPointer + 1, $propertyEndPointer);
+            $propertyDefaultValue = $propertyEqualPointer !== null
+                ? trim(TokenHelper::getContent($phpcsFile, $propertyEqualPointer + 1, $propertyEndPointer - 1))
+                : null;
+
+            $propertyEndPointer = TokenHelper::findNext($phpcsFile, T_SEMICOLON, $propertyPointer + 1);
+            $pointerAfterProperty = TokenHelper::findFirstTokenOnLine(
+                $phpcsFile,
+                TokenHelper::findNextNonWhitespace($phpcsFile, $propertyEndPointer + 1)
+            );
+
+            $pointerBeforeParameterStart = TokenHelper::findPrevious($phpcsFile, [T_COMMA, T_OPEN_PARENTHESIS], $parameterPointer - 1);
+            $parameterStartPointer = TokenHelper::findNextEffective($phpcsFile, $pointerBeforeParameterStart + 1);
+
+            $parameterEqualPointer = TokenHelper::findNextEffective($phpcsFile, $parameterPointer + 1);
+            $parameterHasDefaultValue = $tokens[$parameterEqualPointer]['code'] === T_EQUAL;
+
+            $pointerBeforeAssignment = TokenHelper::findFirstTokenOnLine($phpcsFile, $assignmentPointer - 1);
+            $pointerAfterAssignment = TokenHelper::findLastTokenOnLine($phpcsFile, $assignmentPointer);
+
+            $phpcsFile->fixer->beginChangeset();
+
+            FixerHelper::removeBetweenIncluding($phpcsFile, $pointerBeforeProperty, $pointerAfterProperty - 1);
+
+            if ($isReadonly) {
+                $phpcsFile->fixer->addContentBefore($parameterStartPointer, 'readonly ');
+            }
+
+            $phpcsFile->fixer->addContentBefore($parameterStartPointer, sprintf('%s ', $visibility));
+
+            if (!$parameterHasDefaultValue && $propertyDefaultValue !== null) {
+                $phpcsFile->fixer->addContent($parameterPointer, sprintf(' = %s', $propertyDefaultValue));
+            }
+
+            FixerHelper::removeBetweenIncluding($phpcsFile, $pointerBeforeAssignment, $pointerAfterAssignment);
+
+            $phpcsFile->fixer->endChangeset();
         }
     }
 
